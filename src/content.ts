@@ -1,0 +1,254 @@
+import {
+  fillKnownFields,
+  attachResumeFile,
+  insertAnswer,
+} from "./lib/autofill";
+import { base64ToArrayBuffer } from "./lib/binary";
+import { detectFields } from "./lib/fieldMatcher";
+import type {
+  ExtensionMessage,
+  LongFormAnswersResponse,
+  ProfileResponse,
+  ResumeResponse,
+} from "./lib/messages";
+
+const BUTTON_ID = "gethired-autofill-trigger";
+const isTopFrame = window === window.top;
+
+function sendMessage<T>(message: ExtensionMessage): Promise<T> {
+  return chrome.runtime.sendMessage(message);
+}
+
+function hasFillableFields(): boolean {
+  return detectFields().some(
+    (f) => f.matchedKey || f.isFileInput || f.isLongForm,
+  );
+}
+
+// async function runAutofill(): Promise<string> {
+//   const { profile, error }: ProfileResponse = await sendMessage({
+//     type: "GET_PROFILE",
+//   });
+
+//   if (error || !profile) {
+//     return error === "Not logged in"
+//       ? "Log in to GetHired from the extension popup first."
+//       : `Couldn't load your profile: ${error}`;
+//   }
+
+//   const { filledCount, resumeFieldFound } = fillKnownFields(profile);
+
+//   let resumeMsg = "";
+//   if (resumeFieldFound) {
+//     const resume: ResumeResponse = await sendMessage({ type: "GET_RESUME" });
+//     if (resume.base64 && resume.filename && resume.mimeType) {
+//       const bytes = base64ToArrayBuffer(resume.base64);
+//       attachResumeFile(
+//         resumeFieldFound,
+//         bytes,
+//         resume.filename,
+//         resume.mimeType,
+//       );
+//       resumeMsg = " and attached your resume";
+//     } else if (resume.error) {
+//       resumeMsg = ` (resume not attached: ${resume.error})`;
+//     }
+//   }
+
+//   return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${resumeMsg}.`;
+// }
+
+async function runAutofill(): Promise<string> {
+  const { profile, error }: ProfileResponse = await sendMessage({
+    type: "GET_PROFILE",
+  });
+
+  if (error || !profile) {
+    return error === "Not logged in"
+      ? "Log in to GetHired from the extension popup first."
+      : `Couldn't load your profile: ${error}`;
+  }
+
+  const { filledCount, resumeFieldFound, unmatchedLongForm } =
+    fillKnownFields(profile);
+
+  let longFormFilled = 0;
+  if (unmatchedLongForm.length > 0) {
+    const questions = unmatchedLongForm.map((f) => f.labelText.trim());
+    try {
+      const res: LongFormAnswersResponse = await sendMessage({
+        type: "GET_LONG_FORM_ANSWERS",
+        questions,
+        jobContext: "",
+      });
+      if (res.answers && !res.error) {
+        for (const field of unmatchedLongForm) {
+          const key = field.labelText.trim();
+          if (res.answers[key]) {
+            insertAnswer(
+              field.element as HTMLInputElement | HTMLTextAreaElement,
+              res.answers[key],
+            );
+            longFormFilled += 1;
+          }
+        }
+      }
+    } catch {
+      // If batch fails, leave long-form fields blank (as instructed)
+    }
+  }
+
+  let resumeMsg = "";
+  if (resumeFieldFound) {
+    const resume: ResumeResponse = await sendMessage({ type: "GET_RESUME" });
+    if (resume.base64 && resume.filename && resume.mimeType) {
+      const bytes = base64ToArrayBuffer(resume.base64);
+      attachResumeFile(
+        resumeFieldFound,
+        bytes,
+        resume.filename,
+        resume.mimeType,
+      );
+      resumeMsg = " and attached your resume";
+    } else if (resume.error) {
+      resumeMsg = ` (resume not attached: ${resume.error})`;
+    }
+  }
+
+  return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${longFormFilled > 0 ? ` and ${longFormFilled} long-form answer${longFormFilled === 1 ? "" : "s"}` : ""}${resumeMsg}.`;
+}
+
+function injectButton(onClick: () => Promise<string>) {
+  if (document.getElementById(BUTTON_ID)) return;
+
+  const button = document.createElement("button");
+  button.id = BUTTON_ID;
+  button.textContent = "Autofill with GetHired";
+  Object.assign(button.style, {
+    position: "fixed",
+    bottom: "20px",
+    right: "20px",
+    zIndex: "2147483647",
+    padding: "10px 16px",
+    borderRadius: "8px",
+    border: "none",
+    background: "#111827",
+    color: "#fff",
+    fontSize: "14px",
+    fontFamily: "system-ui, sans-serif",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+    cursor: "pointer",
+  } as CSSStyleDeclaration);
+
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = "Filling...";
+    try {
+      button.textContent = await onClick();
+    } catch (err) {
+      button.textContent = "Something went wrong. Try again.";
+      console.error("[GetHired] autofill failed", err);
+    } finally {
+      button.disabled = false;
+      setTimeout(() => {
+        button.textContent = original;
+      }, 3000);
+    }
+  });
+
+  document.body.appendChild(button);
+}
+
+if (isTopFrame) {
+  // If the form lives directly in the top page (no iframe), handle it locally.
+  let targetFrameWindow: Window | null = null;
+  let hasStrongLocalFields = false;
+
+  async function handleClick(): Promise<string> {
+    if (targetFrameWindow && !hasStrongLocalFields) {
+      // Form lives in a subframe. Ask it to run, and wait for its result.
+      return new Promise((resolve) => {
+        function onResult(e: MessageEvent) {
+          if (
+            e.source !== targetFrameWindow ||
+            e.data?.type !== "GETHIRED_AUTOFILL_RESULT"
+          )
+            return;
+          window.removeEventListener("message", onResult);
+          resolve(e.data.result as string);
+        }
+        window.addEventListener("message", onResult);
+        targetFrameWindow!.postMessage(
+          { type: "GETHIRED_TRIGGER_AUTOFILL" },
+          "*",
+        );
+      });
+    }
+    return runAutofill();
+  }
+
+  const checkLocalFields = () => {
+    // A real form has an email or name field, not just any matched key
+    // (e.g. a "location" field alone isn't a strong enough signal).
+    const fields = detectFields();
+    hasStrongLocalFields = fields.some(
+      (f) => f.matchedKey === "email" || f.matchedKey === "full_name",
+    );
+    if (fields.some((f) => f.matchedKey || f.isFileInput))
+      injectButton(handleClick);
+  };
+  checkLocalFields();
+  new MutationObserver(checkLocalFields).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  // A subframe (e.g. an embedded Ashby/Greenhouse form) announces itself
+  // once its fields render. Only act on this if the top frame doesn't
+  // already have a real local form, otherwise an unrelated iframe (chat
+  // widget, etc.) could hijack a working local form's button.
+  window.addEventListener("message", (e) => {
+    if (
+      e.data?.type === "GETHIRED_FORM_DETECTED" &&
+      e.source &&
+      !hasStrongLocalFields
+    ) {
+      targetFrameWindow = e.source as Window;
+      injectButton(handleClick);
+    }
+  });
+
+  chrome.runtime.onMessage.addListener(
+    (message: ExtensionMessage, _sender, sendResponse) => {
+      if (message.type === "TRIGGER_AUTOFILL") {
+        handleClick().then((result) => sendResponse({ result }));
+        return true;
+      }
+      return false;
+    },
+  );
+} else {
+  // We're inside an iframe. Don't show our own button, announce readiness
+  // to the top frame instead and run the actual fill when asked.
+  const announce = () => {
+    if (hasFillableFields()) {
+      window.top?.postMessage({ type: "GETHIRED_FORM_DETECTED" }, "*");
+    }
+  };
+  announce();
+  new MutationObserver(announce).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  window.addEventListener("message", async (e) => {
+    if (e.data?.type === "GETHIRED_TRIGGER_AUTOFILL") {
+      const result = await runAutofill();
+      window.top?.postMessage(
+        { type: "GETHIRED_AUTOFILL_RESULT", result },
+        "*",
+      );
+    }
+  });
+}
