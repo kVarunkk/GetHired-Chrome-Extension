@@ -8,7 +8,7 @@ import type {
   LongFormAnswersResponse,
 } from "./lib/messages";
 
-const AI_API_URL = import.meta.env.VITE_AI_API_URL as string;
+const API_BASE_URL = import.meta.env.VITE_APP_API_BASE_URL as string;
 
 const PROFILE_CACHE_KEY = "gethired_profile_cache";
 const RESUME_BUCKET = "resumes"; // adjust to match your actual bucket name
@@ -24,6 +24,73 @@ async function handleLogin(
   });
   if (error) return { loggedIn: false, error: error.message };
   return { loggedIn: true, email: data.user?.email ?? undefined };
+}
+
+async function ensureUserRow(accessToken: string): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/extension/ensure-user`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      console.warn("[GetHired] ensure-user call failed", res.status);
+    }
+  } catch (err) {
+    // Non-fatal: login still succeeds, profile fetch will surface a clear
+    // "user not found" error later if the row genuinely doesn't exist.
+    console.warn("[GetHired] ensure-user call errored", err);
+  }
+}
+
+async function handleGoogleLogin(): Promise<SessionStatusResponse> {
+  const supabase = getSupabase();
+  const redirectUrl = chrome.identity.getRedirectURL();
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: redirectUrl, skipBrowserRedirect: true },
+  });
+
+  if (error || !data.url) {
+    return {
+      loggedIn: false,
+      error: error?.message ?? "Could not start Google sign-in",
+    };
+  }
+
+  console.log("data: ", data);
+
+  const responseUrl = await chrome.identity.launchWebAuthFlow({
+    url: data.url,
+    interactive: true,
+  });
+
+  console.log("response url: ", responseUrl);
+
+  if (!responseUrl) {
+    return { loggedIn: false, error: "Google sign-in was cancelled" };
+  }
+
+  const code = new URL(responseUrl).searchParams.get("code");
+  if (!code) {
+    return {
+      loggedIn: false,
+      error: "Google sign-in did not return a valid code",
+    };
+  }
+
+  const { data: sessionData, error: exchangeError } =
+    await supabase.auth.exchangeCodeForSession(code);
+  if (exchangeError || !sessionData.session) {
+    return {
+      loggedIn: false,
+      error: exchangeError?.message ?? "Failed to complete sign-in",
+    };
+  }
+
+  await ensureUserRow(sessionData.session.access_token);
+
+  return { loggedIn: true, email: sessionData.session.user.email ?? undefined };
 }
 
 async function handleLogout(): Promise<{ ok: true }> {
@@ -124,7 +191,7 @@ async function handleLongFormAnswers(
 
   const token = session.access_token;
   try {
-    const res = await fetch(AI_API_URL, {
+    const res = await fetch(API_BASE_URL + "/api/extension/generate-answer", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -150,6 +217,9 @@ chrome.runtime.onMessage.addListener(
       switch (message.type) {
         case "LOGIN":
           sendResponse(await handleLogin(message.email, message.password));
+          break;
+        case "GOOGLE_LOGIN":
+          sendResponse(await handleGoogleLogin());
           break;
         case "LOGOUT":
           sendResponse(await handleLogout());

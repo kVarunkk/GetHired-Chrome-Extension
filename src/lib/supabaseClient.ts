@@ -22,6 +22,7 @@ export function getSupabase(): SupabaseClient {
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false, // no OAuth redirect to parse in v1
+        flowType: "pkce",
       },
     });
     return cachedClient;

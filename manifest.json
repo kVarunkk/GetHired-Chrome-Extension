@@ -3,16 +3,19 @@
   "name": "GetHired Autofill",
   "version": "0.1.0",
   "description": "Autofill job applications anywhere on the web using your GetHired profile and resume.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxjCRkOO3XwXFiMhiE1FDHCqa1yVzIOP7UaIcjgfKWBvcR3ysGDA/ijjv4GnbyFcsh/392B0khje2PYrcv6PP7UMT3j/bK0tJB1izbhqGXB3bxIamUMOY+V2lgRkB52K3ArvcwvRPW1WxW95Q4wZSW2Q8FoZZ0tSLQ459AUm/c2BSirsPxhD4xB5OwgcJNbzHD9XgmVpIOKPuyOCaaNAI0GKTabn7fveH497hUEwexvCHmbbsxF8s08HQsQBl2LT9yTmOstXixmRV3yfZUyglajqw3zmRv6QPQPSJkJUkiNPiiSt1GcJCcxeZGSA2ZZ2SPlqaAnp7pDBnPc1xcTLRrQIDAQAB",
   "action": {
     "default_popup": "src/popup/index.html",
     "default_icon": {
       "16": "public/icons/icon16.png",
+      "32": "public/icons/icon32.png",
       "48": "public/icons/icon48.png",
       "128": "public/icons/icon128.png"
     }
   },
   "icons": {
     "16": "public/icons/icon16.png",
+    "32": "public/icons/icon32.png",
     "48": "public/icons/icon48.png",
     "128": "public/icons/icon128.png"
   },
@@ -20,7 +23,7 @@
     "service_worker": "src/background.ts",
     "type": "module"
   },
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab", "scripting", "identity"],
   "host_permissions": [
     "https://*.supabase.co/*",
     "https://gethired.devhub.co.in/*",
@@ -33,6 +36,12 @@
       "js": ["src/content.ts"],
       "run_at": "document_idle",
       "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["public/icons/icon32.png", "public/icons/icon48.png"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

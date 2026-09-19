@@ -25,39 +25,6 @@ function hasFillableFields(): boolean {
   );
 }
 
-// async function runAutofill(): Promise<string> {
-//   const { profile, error }: ProfileResponse = await sendMessage({
-//     type: "GET_PROFILE",
-//   });
-
-//   if (error || !profile) {
-//     return error === "Not logged in"
-//       ? "Log in to GetHired from the extension popup first."
-//       : `Couldn't load your profile: ${error}`;
-//   }
-
-//   const { filledCount, resumeFieldFound } = fillKnownFields(profile);
-
-//   let resumeMsg = "";
-//   if (resumeFieldFound) {
-//     const resume: ResumeResponse = await sendMessage({ type: "GET_RESUME" });
-//     if (resume.base64 && resume.filename && resume.mimeType) {
-//       const bytes = base64ToArrayBuffer(resume.base64);
-//       attachResumeFile(
-//         resumeFieldFound,
-//         bytes,
-//         resume.filename,
-//         resume.mimeType,
-//       );
-//       resumeMsg = " and attached your resume";
-//     } else if (resume.error) {
-//       resumeMsg = ` (resume not attached: ${resume.error})`;
-//     }
-//   }
-
-//   return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${resumeMsg}.`;
-// }
-
 async function runAutofill(): Promise<string> {
   const { profile, error }: ProfileResponse = await sendMessage({
     type: "GET_PROFILE",
@@ -118,12 +85,37 @@ async function runAutofill(): Promise<string> {
   return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${longFormFilled > 0 ? ` and ${longFormFilled} long-form answer${longFormFilled === 1 ? "" : "s"}` : ""}${resumeMsg}.`;
 }
 
+const STYLE_ID = "gethired-autofill-styles";
+
+function ensureButtonStyles() {
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = `
+    #${BUTTON_ID} {
+      background: #000000;
+      color: #ffffff;
+      border: none;
+    }
+    @media (prefers-color-scheme: dark) {
+      #${BUTTON_ID} {
+        background: #ffffff;
+        color: #000000;
+        border: 1px solid #e5e7eb;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 function injectButton(onClick: () => Promise<string>) {
   if (document.getElementById(BUTTON_ID)) return;
 
+  ensureButtonStyles();
+
   const button = document.createElement("button");
   button.id = BUTTON_ID;
-  button.textContent = "Autofill with GetHired";
+  // button.textContent = "Autofill with GetHired";
   Object.assign(button.style, {
     position: "fixed",
     bottom: "20px",
@@ -131,28 +123,42 @@ function injectButton(onClick: () => Promise<string>) {
     zIndex: "2147483647",
     padding: "10px 16px",
     borderRadius: "8px",
-    border: "none",
-    background: "#111827",
-    color: "#fff",
     fontSize: "14px",
     fontFamily: "system-ui, sans-serif",
     boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
     cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
   } as CSSStyleDeclaration);
+
+  const icon = document.createElement("img");
+  icon.src = chrome.runtime.getURL("public/icons/icon32.png");
+  Object.assign(icon.style, {
+    width: "16px",
+    height: "16px",
+    borderRadius: "4px",
+  } as CSSStyleDeclaration);
+
+  const label = document.createElement("span");
+  label.textContent = "Autofill with GetHired";
+
+  button.appendChild(icon);
+  button.appendChild(label);
 
   button.addEventListener("click", async () => {
     button.disabled = true;
     const original = button.textContent;
-    button.textContent = "Filling...";
+    label.textContent = "Filling...";
     try {
-      button.textContent = await onClick();
+      label.textContent = await onClick();
     } catch (err) {
-      button.textContent = "Something went wrong. Try again.";
+      label.textContent = "Something went wrong. Try again.";
       console.error("[GetHired] autofill failed", err);
     } finally {
       button.disabled = false;
       setTimeout(() => {
-        button.textContent = original;
+        label.textContent = original;
       }, 3000);
     }
   });

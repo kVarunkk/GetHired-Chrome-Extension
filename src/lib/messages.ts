@@ -1,13 +1,14 @@
-import type { Profile } from './supabaseClient';
+import type { Profile } from "./supabaseClient";
 
 export type ExtensionMessage =
-  | { type: 'GET_SESSION_STATUS' }
-  | { type: 'LOGIN'; email: string; password: string }
-  | { type: 'LOGOUT' }
-  | { type: 'GET_PROFILE' }
-  | { type: 'GET_RESUME' }
-  | { type: 'TRIGGER_AUTOFILL' }
-  | { type: 'GET_LONG_FORM_ANSWERS'; questions: string[]; jobContext?: string };
+  | { type: "GET_SESSION_STATUS" }
+  | { type: "LOGIN"; email: string; password: string }
+  | { type: "GOOGLE_LOGIN" }
+  | { type: "LOGOUT" }
+  | { type: "GET_PROFILE" }
+  | { type: "GET_RESUME" }
+  | { type: "TRIGGER_AUTOFILL" }
+  | { type: "GET_LONG_FORM_ANSWERS"; questions: string[]; jobContext?: string };
 
 export interface LongFormAnswersResponse {
   answers: Record<string, string>;

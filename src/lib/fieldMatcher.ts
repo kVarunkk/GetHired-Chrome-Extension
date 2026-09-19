@@ -18,7 +18,7 @@ export interface DetectedField {
 
 // Order matters: more specific patterns should come before generic ones.
 const PATTERNS: Array<[ProfileKey, RegExp]> = [
-  ["full_name", /\b(full\s*name|your\s*name)\b/i],
+  ["full_name", /\b(full\s*name|your\s*name)\b|^name$/i],
   ["email", /\be-?mail\b/i],
   ["linkedin_url", /\blinked\s*in\b/i],
   ["github_url", /\bgit\s*hub\b/i],
@@ -42,6 +42,23 @@ export interface DetectedField {
 
 const LABEL_LIKE_SELECTOR =
   'label, legend, [class*="label" i], [class*="question" i]';
+
+function getAriaGroupLabelText(el: HTMLElement, depth = 10): string {
+  // Climbs further than getContainerText, and resolves via the actual
+  // aria-labelledby reference rather than guessing from nearby text.
+  // Workday's file upload widgets put the real "Resume/CV" heading many
+  // levels above the input, referenced this way rather than nested nearby.
+  let node: HTMLElement | null = el;
+  for (let i = 0; i < depth && node; i += 1) {
+    const labelledBy = node.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const labelEl = document.getElementById(labelledBy);
+      if (labelEl?.innerText?.trim()) return labelEl.innerText.trim();
+    }
+    node = node.parentElement;
+  }
+  return "";
+}
 
 /** Finds the smallest ancestor that wraps only this one field (no sibling
  * inputs), by walking up until an ancestor would contain more than one
@@ -192,6 +209,7 @@ export function isResumeUpload(
     el.getAttribute("id"),
     el.getAttribute("aria-label"),
     getFieldsetLegend(el),
+    getAriaGroupLabelText(el),
     getContainerText(el),
   ]
     .filter(Boolean)
