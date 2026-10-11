@@ -4,7 +4,7 @@ import {
   insertAnswer,
 } from "./lib/autofill";
 import { base64ToArrayBuffer } from "./lib/binary";
-import { detectFields } from "./lib/fieldMatcher";
+import { detectFields, looksLikeJobApplication } from "./lib/fieldMatcher";
 import {
   extractJobContext,
   formatJobContext,
@@ -25,10 +25,15 @@ function sendMessage<T>(message: ExtensionMessage): Promise<T> {
   return chrome.runtime.sendMessage(message);
 }
 
-function hasFillableFields(): boolean {
-  return detectFields().some(
-    (f) => f.matchedKey || f.isFileInput || f.isLongForm,
-  );
+/** Runs `callback` once DOM changes settle, instead of on every mutation.
+ * React-heavy pages fire thousands of mutations, and field detection reads
+ * computed styles for every input. */
+function observeDomChanges(callback: () => void) {
+  let timer: number | undefined;
+  new MutationObserver(() => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(callback, 300);
+  }).observe(document.documentElement, { childList: true, subtree: true });
 }
 
 /** `parentContext` is what the top page found when the form is embedded in
@@ -227,6 +232,8 @@ if (isTopFrame) {
     return runAutofill();
   }
 
+  let targetFrameLooksLikeApplication = false;
+
   const checkLocalFields = () => {
     // A real form has an email or name field, not just any matched key
     // (e.g. a "location" field alone isn't a strong enough signal).
@@ -234,28 +241,31 @@ if (isTopFrame) {
     hasStrongLocalFields = fields.some(
       (f) => f.matchedKey === "email" || f.matchedKey === "full_name",
     );
-    if (fields.some((f) => f.matchedKey || f.isFileInput))
-      injectButton(handleClick);
+    // The floating button only appears on pages that look like a job
+    // application; elsewhere the popup's "Fill this page" still works.
+    if (looksLikeJobApplication(fields)) injectButton(handleClick);
   };
   checkLocalFields();
-  new MutationObserver(checkLocalFields).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
+  observeDomChanges(checkLocalFields);
 
   // A subframe (e.g. an embedded Ashby/Greenhouse form) announces itself
   // once its fields render. Only act on this if the top frame doesn't
   // already have a real local form, otherwise an unrelated iframe (chat
-  // widget, etc.) could hijack a working local form's button.
+  // widget, etc.) could hijack a working local form's button. A frame that
+  // looks like an application also wins over one that merely has fields.
   window.addEventListener("message", (e) => {
     if (
-      e.data?.type === "GETHIRED_FORM_DETECTED" &&
-      e.source &&
-      !hasStrongLocalFields
-    ) {
+      e.data?.type !== "GETHIRED_FORM_DETECTED" ||
+      !e.source ||
+      hasStrongLocalFields
+    )
+      return;
+    const looksLikeApplication = e.data.looksLikeApplication === true;
+    if (looksLikeApplication || !targetFrameLooksLikeApplication) {
       targetFrameWindow = e.source as Window;
-      injectButton(handleClick);
+      targetFrameLooksLikeApplication = looksLikeApplication;
     }
+    if (looksLikeApplication) injectButton(handleClick);
   });
 
   chrome.runtime.onMessage.addListener(
@@ -271,15 +281,19 @@ if (isTopFrame) {
   // We're inside an iframe. Don't show our own button, announce readiness
   // to the top frame instead and run the actual fill when asked.
   const announce = () => {
-    if (hasFillableFields()) {
-      window.top?.postMessage({ type: "GETHIRED_FORM_DETECTED" }, "*");
+    const fields = detectFields();
+    if (fields.some((f) => f.matchedKey || f.isFileInput || f.isLongForm)) {
+      window.top?.postMessage(
+        {
+          type: "GETHIRED_FORM_DETECTED",
+          looksLikeApplication: looksLikeJobApplication(fields),
+        },
+        "*",
+      );
     }
   };
   announce();
-  new MutationObserver(announce).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
+  observeDomChanges(announce);
 
   window.addEventListener("message", async (e) => {
     if (e.data?.type === "GETHIRED_TRIGGER_AUTOFILL") {

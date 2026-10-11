@@ -274,6 +274,45 @@ function getFieldsetLegend(el: HTMLElement): string {
   return el.closest("fieldset")?.querySelector("legend")?.innerText ?? "";
 }
 
+// Hosted ATS / job board domains. Pages here only need a light signal.
+const KNOWN_ATS_HOST =
+  /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|ats\.rippling\.com|wellfound\.com|myworkdayjobs\.com|smartrecruiters\.com|bamboohr\.com|jobvite\.com|icims\.com|recruitee\.com|teamtailor\.com|breezy\.hr|applytojob\.com)$/i;
+
+const JOB_PAGE_HINT =
+  /\b(apply|application|careers?|jobs?|hiring|positions?|openings?|vacanc(y|ies)|join[\s-]us)\b/i;
+
+/** Decides whether to show the floating button. Deliberately stricter than
+ * what autofill itself can handle: login pages, newsletter signups and
+ * contact forms also have name/email fields, and showing the button there
+ * is noise. The popup's "Fill this page" still works on any page. */
+export function looksLikeJobApplication(fields: DetectedField[]): boolean {
+  const hasResumeUpload = fields.some(
+    (f) =>
+      f.isFileInput &&
+      resumeUploadScore(
+        f.element as HTMLInputElement,
+        f.labelText,
+        f.isFirstFileInputOnPage,
+      ) >= 2,
+  );
+  if (hasResumeUpload) return true;
+
+  const matchedCount = fields.filter((f) => f.matchedKey || f.namePart).length;
+  if (KNOWN_ATS_HOST.test(location.hostname)) {
+    return matchedCount >= 2 || fields.some((f) => f.isFileInput);
+  }
+
+  const hasEmail = fields.some((f) => f.matchedKey === "email");
+  const hasName = fields.some(
+    (f) => f.matchedKey === "full_name" || f.namePart,
+  );
+  if (!hasEmail || !hasName) return false;
+
+  const hasLinkedIn = fields.some((f) => f.matchedKey === "linkedin_url");
+  const pageText = `${location.hostname} ${location.pathname} ${document.title}`;
+  return hasLinkedIn || JOB_PAGE_HINT.test(pageText);
+}
+
 const RESUME_PATTERN = /\b(résumé|resume|cv|curriculum)\b/i;
 const OTHER_DOCUMENT_PATTERN =
   /\b(cover\s*letter|transcript|portfolio|writing\s*sample|work\s*sample|certificates?|certifications?|references?|photo|headshot)\b/i;
