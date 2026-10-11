@@ -4,7 +4,6 @@ import {
   isResumeUpload,
   type DetectedField,
 } from "./fieldMatcher";
-import { FIRST_NAME_PATTERN, LAST_NAME_PATTERN } from "./fieldMatcher";
 /**
  * Plain `element.value = x` does not trigger React/Vue/Angular's change
  * detection because those frameworks override the native value setter.
@@ -71,12 +70,12 @@ export function fillKnownFields(profile: Profile): AutofillResult {
       continue;
     }
 
-    if (FIRST_NAME_PATTERN.test(field.labelText) && firstName) {
+    if (field.namePart === "first" && firstName) {
       setNativeValue(field.element as HTMLInputElement, firstName);
       filledCount += 1;
       continue;
     }
-    if (LAST_NAME_PATTERN.test(field.labelText) && lastName) {
+    if (field.namePart === "last" && lastName) {
       setNativeValue(field.element as HTMLInputElement, lastName);
       filledCount += 1;
       continue;
