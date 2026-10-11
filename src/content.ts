@@ -5,6 +5,12 @@ import {
 } from "./lib/autofill";
 import { base64ToArrayBuffer } from "./lib/binary";
 import { detectFields } from "./lib/fieldMatcher";
+import {
+  extractJobContext,
+  formatJobContext,
+  mergeJobContext,
+  type JobContext,
+} from "./lib/jobContext";
 import type {
   ExtensionMessage,
   LongFormAnswersResponse,
@@ -25,7 +31,9 @@ function hasFillableFields(): boolean {
   );
 }
 
-async function runAutofill(): Promise<string> {
+/** `parentContext` is what the top page found when the form is embedded in
+ * an iframe; the job description usually lives on that outer page. */
+async function runAutofill(parentContext?: JobContext): Promise<string> {
   const { profile, error }: ProfileResponse = await sendMessage({
     type: "GET_PROFILE",
   });
@@ -44,10 +52,13 @@ async function runAutofill(): Promise<string> {
   if (unmatchedLongForm.length > 0) {
     const questions = unmatchedLongForm.map((f) => f.labelText.trim());
     try {
+      const jobContext = formatJobContext(
+        mergeJobContext(parentContext, extractJobContext()),
+      );
       const res: LongFormAnswersResponse = await sendMessage({
         type: "GET_LONG_FORM_ANSWERS",
         questions,
-        jobContext: "",
+        jobContext,
       });
       if (res.answers && !res.error) {
         // The API may echo questions back with different whitespace, casing
@@ -205,7 +216,10 @@ if (isTopFrame) {
         }
         window.addEventListener("message", onResult);
         targetFrameWindow!.postMessage(
-          { type: "GETHIRED_TRIGGER_AUTOFILL" },
+          {
+            type: "GETHIRED_TRIGGER_AUTOFILL",
+            jobContext: extractJobContext(),
+          },
           "*",
         );
       });
@@ -269,7 +283,20 @@ if (isTopFrame) {
 
   window.addEventListener("message", async (e) => {
     if (e.data?.type === "GETHIRED_TRIGGER_AUTOFILL") {
-      const result = await runAutofill();
+      const ctx = e.data.jobContext;
+      const parentContext: JobContext | undefined =
+        ctx && typeof ctx === "object" && typeof ctx.url === "string"
+          ? {
+              url: ctx.url,
+              company: typeof ctx.company === "string" ? ctx.company : undefined,
+              title: typeof ctx.title === "string" ? ctx.title : undefined,
+              description:
+                typeof ctx.description === "string"
+                  ? ctx.description
+                  : undefined,
+            }
+          : undefined;
+      const result = await runAutofill(parentContext);
       window.top?.postMessage(
         { type: "GETHIRED_AUTOFILL_RESULT", result },
         "*",
