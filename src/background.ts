@@ -58,14 +58,12 @@ async function handleGoogleLogin(): Promise<SessionStatusResponse> {
     };
   }
 
-  console.log("data: ", data);
 
   const responseUrl = await chrome.identity.launchWebAuthFlow({
     url: data.url,
     interactive: true,
   });
 
-  console.log("response url: ", responseUrl);
 
   if (!responseUrl) {
     return { loggedIn: false, error: "Google sign-in was cancelled" };
@@ -183,7 +181,6 @@ async function handleLongFormAnswers(
   questions: string[],
   jobContext?: string,
 ): Promise<LongFormAnswersResponse> {
-  console.log("handleLongFormAnswers", questions, jobContext);
   const supabase = getSupabase();
   const { data: sessionData } = await supabase.auth.getSession();
   const session = sessionData.session;
@@ -199,15 +196,25 @@ async function handleLongFormAnswers(
       },
       body: JSON.stringify({ questions, jobContext: jobContext ?? "" }),
     });
-    console.log("handleLongFormAnswers response", res);
     if (!res.ok) {
       const errBody = await res.text();
-      return { answers: {}, error: `API error ${res.status}: ${errBody}` };
+      let message = errBody;
+      try {
+        message = JSON.parse(errBody).message ?? errBody;
+      } catch {
+        // non-JSON body, use as-is
+      }
+      return { answers: {}, error: `${message} (HTTP ${res.status})` };
     }
     const data = await res.json();
     return { answers: data.answers ?? {}, error: data.error ?? undefined };
   } catch (e: any) {
-    return { answers: {}, error: e?.message ?? "Fetch failed" };
+    // A network failure here usually means the GetHired server at
+    // API_BASE_URL isn't reachable (e.g. local dev server not running).
+    return {
+      answers: {},
+      error: `can't reach ${API_BASE_URL} (${e?.message ?? "fetch failed"})`,
+    };
   }
 }
 

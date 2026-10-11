@@ -4,7 +4,13 @@ import {
   insertAnswer,
 } from "./lib/autofill";
 import { base64ToArrayBuffer } from "./lib/binary";
-import { detectFields } from "./lib/fieldMatcher";
+import { detectFields, looksLikeJobApplication } from "./lib/fieldMatcher";
+import {
+  extractJobContext,
+  formatJobContext,
+  mergeJobContext,
+  type JobContext,
+} from "./lib/jobContext";
 import type {
   ExtensionMessage,
   LongFormAnswersResponse,
@@ -19,13 +25,20 @@ function sendMessage<T>(message: ExtensionMessage): Promise<T> {
   return chrome.runtime.sendMessage(message);
 }
 
-function hasFillableFields(): boolean {
-  return detectFields().some(
-    (f) => f.matchedKey || f.isFileInput || f.isLongForm,
-  );
+/** Runs `callback` once DOM changes settle, instead of on every mutation.
+ * React-heavy pages fire thousands of mutations, and field detection reads
+ * computed styles for every input. */
+function observeDomChanges(callback: () => void) {
+  let timer: number | undefined;
+  new MutationObserver(() => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(callback, 300);
+  }).observe(document.documentElement, { childList: true, subtree: true });
 }
 
-async function runAutofill(): Promise<string> {
+/** `parentContext` is what the top page found when the form is embedded in
+ * an iframe; the job description usually lives on that outer page. */
+async function runAutofill(parentContext?: JobContext): Promise<string> {
   const { profile, error }: ProfileResponse = await sendMessage({
     type: "GET_PROFILE",
   });
@@ -40,30 +53,52 @@ async function runAutofill(): Promise<string> {
     fillKnownFields(profile);
 
   let longFormFilled = 0;
+  let longFormError = "";
   if (unmatchedLongForm.length > 0) {
     const questions = unmatchedLongForm.map((f) => f.labelText.trim());
     try {
+      const jobContext = formatJobContext(
+        mergeJobContext(parentContext, extractJobContext()),
+      );
       const res: LongFormAnswersResponse = await sendMessage({
         type: "GET_LONG_FORM_ANSWERS",
         questions,
-        jobContext: "",
+        jobContext,
       });
       if (res.answers && !res.error) {
+        // The API may echo questions back with different whitespace, casing
+        // or punctuation, so fall back to a normalized lookup.
+        const normalize = (s: string) =>
+          s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        const normalizedAnswers = new Map(
+          Object.entries(res.answers).map(([q, a]) => [normalize(q), a]),
+        );
         for (const field of unmatchedLongForm) {
           const key = field.labelText.trim();
-          if (res.answers[key]) {
+          const answer = res.answers[key] ?? normalizedAnswers.get(normalize(key));
+          if (answer) {
             insertAnswer(
               field.element as HTMLInputElement | HTMLTextAreaElement,
-              res.answers[key],
+              answer,
             );
             longFormFilled += 1;
+          } else {
+            console.warn("[GetHired] no answer returned for question", key);
           }
         }
+      } else if (res.error) {
+        console.warn("[GetHired] long-form answers failed", res.error);
+        longFormError = res.error;
       }
-    } catch {
+    } catch (err) {
       // If batch fails, leave long-form fields blank (as instructed)
+      console.warn("[GetHired] long-form answers request errored", err);
+      longFormError = err instanceof Error ? err.message : String(err);
     }
   }
+  const longFormMsg = longFormError
+    ? ` (AI answers skipped: ${longFormError})`
+    : "";
 
   let resumeMsg = "";
   if (resumeFieldFound) {
@@ -82,7 +117,7 @@ async function runAutofill(): Promise<string> {
     }
   }
 
-  return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${longFormFilled > 0 ? ` and ${longFormFilled} long-form answer${longFormFilled === 1 ? "" : "s"}` : ""}${resumeMsg}.`;
+  return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${longFormFilled > 0 ? ` and ${longFormFilled} long-form answer${longFormFilled === 1 ? "" : "s"}` : ""}${resumeMsg}${longFormMsg}.`;
 }
 
 const STYLE_ID = "gethired-autofill-styles";
@@ -186,13 +221,18 @@ if (isTopFrame) {
         }
         window.addEventListener("message", onResult);
         targetFrameWindow!.postMessage(
-          { type: "GETHIRED_TRIGGER_AUTOFILL" },
+          {
+            type: "GETHIRED_TRIGGER_AUTOFILL",
+            jobContext: extractJobContext(),
+          },
           "*",
         );
       });
     }
     return runAutofill();
   }
+
+  let targetFrameLooksLikeApplication = false;
 
   const checkLocalFields = () => {
     // A real form has an email or name field, not just any matched key
@@ -201,28 +241,31 @@ if (isTopFrame) {
     hasStrongLocalFields = fields.some(
       (f) => f.matchedKey === "email" || f.matchedKey === "full_name",
     );
-    if (fields.some((f) => f.matchedKey || f.isFileInput))
-      injectButton(handleClick);
+    // The floating button only appears on pages that look like a job
+    // application; elsewhere the popup's "Fill this page" still works.
+    if (looksLikeJobApplication(fields)) injectButton(handleClick);
   };
   checkLocalFields();
-  new MutationObserver(checkLocalFields).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
+  observeDomChanges(checkLocalFields);
 
   // A subframe (e.g. an embedded Ashby/Greenhouse form) announces itself
   // once its fields render. Only act on this if the top frame doesn't
   // already have a real local form, otherwise an unrelated iframe (chat
-  // widget, etc.) could hijack a working local form's button.
+  // widget, etc.) could hijack a working local form's button. A frame that
+  // looks like an application also wins over one that merely has fields.
   window.addEventListener("message", (e) => {
     if (
-      e.data?.type === "GETHIRED_FORM_DETECTED" &&
-      e.source &&
-      !hasStrongLocalFields
-    ) {
+      e.data?.type !== "GETHIRED_FORM_DETECTED" ||
+      !e.source ||
+      hasStrongLocalFields
+    )
+      return;
+    const looksLikeApplication = e.data.looksLikeApplication === true;
+    if (looksLikeApplication || !targetFrameLooksLikeApplication) {
       targetFrameWindow = e.source as Window;
-      injectButton(handleClick);
+      targetFrameLooksLikeApplication = looksLikeApplication;
     }
+    if (looksLikeApplication) injectButton(handleClick);
   });
 
   chrome.runtime.onMessage.addListener(
@@ -238,19 +281,36 @@ if (isTopFrame) {
   // We're inside an iframe. Don't show our own button, announce readiness
   // to the top frame instead and run the actual fill when asked.
   const announce = () => {
-    if (hasFillableFields()) {
-      window.top?.postMessage({ type: "GETHIRED_FORM_DETECTED" }, "*");
+    const fields = detectFields();
+    if (fields.some((f) => f.matchedKey || f.isFileInput || f.isLongForm)) {
+      window.top?.postMessage(
+        {
+          type: "GETHIRED_FORM_DETECTED",
+          looksLikeApplication: looksLikeJobApplication(fields),
+        },
+        "*",
+      );
     }
   };
   announce();
-  new MutationObserver(announce).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
+  observeDomChanges(announce);
 
   window.addEventListener("message", async (e) => {
     if (e.data?.type === "GETHIRED_TRIGGER_AUTOFILL") {
-      const result = await runAutofill();
+      const ctx = e.data.jobContext;
+      const parentContext: JobContext | undefined =
+        ctx && typeof ctx === "object" && typeof ctx.url === "string"
+          ? {
+              url: ctx.url,
+              company: typeof ctx.company === "string" ? ctx.company : undefined,
+              title: typeof ctx.title === "string" ? ctx.title : undefined,
+              description:
+                typeof ctx.description === "string"
+                  ? ctx.description
+                  : undefined,
+            }
+          : undefined;
+      const result = await runAutofill(parentContext);
       window.top?.postMessage(
         { type: "GETHIRED_AUTOFILL_RESULT", result },
         "*",
