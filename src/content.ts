@@ -40,6 +40,7 @@ async function runAutofill(): Promise<string> {
     fillKnownFields(profile);
 
   let longFormFilled = 0;
+  let longFormError = "";
   if (unmatchedLongForm.length > 0) {
     const questions = unmatchedLongForm.map((f) => f.labelText.trim());
     try {
@@ -49,21 +50,39 @@ async function runAutofill(): Promise<string> {
         jobContext: "",
       });
       if (res.answers && !res.error) {
+        // The API may echo questions back with different whitespace, casing
+        // or punctuation, so fall back to a normalized lookup.
+        const normalize = (s: string) =>
+          s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        const normalizedAnswers = new Map(
+          Object.entries(res.answers).map(([q, a]) => [normalize(q), a]),
+        );
         for (const field of unmatchedLongForm) {
           const key = field.labelText.trim();
-          if (res.answers[key]) {
+          const answer = res.answers[key] ?? normalizedAnswers.get(normalize(key));
+          if (answer) {
             insertAnswer(
               field.element as HTMLInputElement | HTMLTextAreaElement,
-              res.answers[key],
+              answer,
             );
             longFormFilled += 1;
+          } else {
+            console.warn("[GetHired] no answer returned for question", key);
           }
         }
+      } else if (res.error) {
+        console.warn("[GetHired] long-form answers failed", res.error);
+        longFormError = res.error;
       }
-    } catch {
+    } catch (err) {
       // If batch fails, leave long-form fields blank (as instructed)
+      console.warn("[GetHired] long-form answers request errored", err);
+      longFormError = err instanceof Error ? err.message : String(err);
     }
   }
+  const longFormMsg = longFormError
+    ? ` (AI answers skipped: ${longFormError})`
+    : "";
 
   let resumeMsg = "";
   if (resumeFieldFound) {
@@ -82,7 +101,7 @@ async function runAutofill(): Promise<string> {
     }
   }
 
-  return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${longFormFilled > 0 ? ` and ${longFormFilled} long-form answer${longFormFilled === 1 ? "" : "s"}` : ""}${resumeMsg}.`;
+  return `Filled ${filledCount} field${filledCount === 1 ? "" : "s"}${longFormFilled > 0 ? ` and ${longFormFilled} long-form answer${longFormFilled === 1 ? "" : "s"}` : ""}${resumeMsg}${longFormMsg}.`;
 }
 
 const STYLE_ID = "gethired-autofill-styles";
