@@ -274,24 +274,42 @@ function getFieldsetLegend(el: HTMLElement): string {
   return el.closest("fieldset")?.querySelector("legend")?.innerText ?? "";
 }
 
-export function isResumeUpload(
+const RESUME_PATTERN = /\b(résumé|resume|cv|curriculum)\b/i;
+const OTHER_DOCUMENT_PATTERN =
+  /\b(cover\s*letter|transcript|portfolio|writing\s*sample|work\s*sample|certificates?|certifications?|references?|photo|headshot)\b/i;
+
+/** Scores how likely a file input is the resume upload (0 = not a resume).
+ * The input's own label and attributes are checked first. Wider context
+ * (legend, aria group, ancestor text) is only a fallback, because on forms
+ * like Ashby that context spans neighbouring fields: the "Cover Letter"
+ * input's ancestors also contain the "Resume" field's text. */
+export function resumeUploadScore(
   el: HTMLInputElement,
+  labelText: string,
   isFirstFileInputOnPage: boolean,
-): boolean {
-  const attrBundle = [
+): number {
+  // Underscores/dashes become spaces so "_systemfield_resume" hits \bresume.
+  const ownText = [
+    labelText,
     el.getAttribute("name"),
     el.getAttribute("id"),
     el.getAttribute("aria-label"),
-    getFieldsetLegend(el),
-    getAriaGroupLabelText(el),
-    getContainerText(el),
   ]
     .filter(Boolean)
-    .join(" ");
+    .join(" ")
+    .replace(/[_-]/g, " ");
 
-  if (/\b(résumé|resume|cv|curriculum)\b/i.test(attrBundle)) return true;
+  if (RESUME_PATTERN.test(ownText)) return 3;
+  if (OTHER_DOCUMENT_PATTERN.test(ownText)) return 0;
+
+  const groupText = [getFieldsetLegend(el), getAriaGroupLabelText(el)]
+    .filter(Boolean)
+    .join(" ");
+  if (RESUME_PATTERN.test(groupText)) return 2;
+
+  if (RESUME_PATTERN.test(getContainerText(el))) return 1;
 
   const accept = el.getAttribute("accept") || "";
   const acceptsDocTypes = /\.(pdf|docx?|rtf)\b/i.test(accept);
-  return acceptsDocTypes && isFirstFileInputOnPage;
+  return acceptsDocTypes && isFirstFileInputOnPage ? 1 : 0;
 }

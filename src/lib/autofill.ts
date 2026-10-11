@@ -1,7 +1,7 @@
 import type { Profile } from "./supabaseClient";
 import {
   detectFields,
-  isResumeUpload,
+  resumeUploadScore,
   type DetectedField,
 } from "./fieldMatcher";
 /**
@@ -47,6 +47,7 @@ export function fillKnownFields(profile: Profile): AutofillResult {
   const fields = detectFields();
   let filledCount = 0;
   let resumeFieldFound: HTMLInputElement | null = null;
+  let bestResumeScore = 0;
   const unmatchedLongForm: DetectedField[] = [];
 
   const [firstName, ...rest] = (profile.full_name ?? "").trim().split(/\s+/);
@@ -54,12 +55,14 @@ export function fillKnownFields(profile: Profile): AutofillResult {
 
   for (const field of fields) {
     if (field.isFileInput) {
-      if (
-        isResumeUpload(
-          field.element as HTMLInputElement,
-          field.isFirstFileInputOnPage,
-        )
-      ) {
+      // Keep the highest-scoring input; on a tie the earlier one wins.
+      const score = resumeUploadScore(
+        field.element as HTMLInputElement,
+        field.labelText,
+        field.isFirstFileInputOnPage,
+      );
+      if (score > bestResumeScore) {
+        bestResumeScore = score;
         resumeFieldFound = field.element as HTMLInputElement;
       }
       continue;
